@@ -1,0 +1,81 @@
+# GLaDOS 开发日志 · 2026-10-30
+
+## 今日目标
+
+打通树莓派 5 开发调试通道，完成视觉（摄像头）与听觉（麦克风）两大传感器的硬件验证。
+
+## 完成内容
+
+### 1. 网络：有线直连调试通道（方案 3）✅
+
+* 放弃在校园网内扫描找 IP（此前触发学校安全策略被封禁，已申请解禁）。
+* 改用 **PC ↔ 树莓派网线直连 + 静态 IP**：
+  * PC：`192.168.50.1/24`
+  * 树莓派 eth0：`192.168.50.2/24`（`netplan-eth0`，不设网关）
+* 树莓派外网仍由 wlan0 连手机热点承担，两条链路互不干扰。
+* 关闭 `sustech` / `sustech24` 的 autoconnect，防止 Wi-Fi 抢网卡顶掉热点。
+* **排障**：直连初期丢包 50–75%，定位为 PC 网卡节能问题——关闭 Energy Efficient Ethernet / Green Ethernet、取消"允许计算机关闭此设备"，并将速度双工固定为 100 Mbps 全双工后，丢包归零。
+* 至此 `ssh endscar@192.168.50.2` 成为永久稳定的开发入口。
+
+### 2. 系统更新 ✅
+
+* `sudo apt update && sudo apt full-upgrade -y` 完成（含 rpicam-apps-lite、内核 initramfs 重建），已重启生效。
+
+### 3. 摄像头 Camera Module 3（IMX708）✅
+
+* 22 针 CSI 排线安装（触点朝电路板、插到底、扣紧卡扣）。
+* `rpicam-hello --list-cameras` 正确识别 `imx708`（4608×2592）。
+* `rpicam-still -o test.jpg` 拍照成功，`scp` 传回 PC 验证成像正常。
+
+### 4. 麦克风 INMP441（I²S）✅
+
+* 接线：VDD→Pin1(3.3V)、GND→Pin9、SCK→Pin12(GPIO18)、WS→Pin35(GPIO19)、SD→Pin38(GPIO20)、L/R→Pin39(GND，左声道)。
+* `/boot/firmware/config.txt` 追加：
+  ```
+  dtparam=i2s=on
+  dtoverlay=i2s-mmap
+  dtoverlay=googlevoicehat-soundcard
+  ```
+* 重启后 `arecord -l` 识别到 I²S 声卡，`arecord -D plughw:X,0 -f cd -d 5 test.wav` 录音并传回 PC 试听通过。
+
+### 5. OLED SSD1306（4 针 I²C）🔧 进行中
+
+* 接线：VCC→Pin17(3.3V)、GND→Pin6、SCL→Pin5(GPIO3)、SDA→Pin3(GPIO2)。
+* 计划：I²C 使能 → `i2cdetect -y 1` 确认地址 0x3C → luma.oled 显示 IP / CPU 温度。
+* 用途定位：开机 IP 显示（免查找）、CPU 温度、对话状态与调试信息屏；GC9A01 圆屏后续专职做"眼睛"。
+
+## 当前 GPIO 占用表
+
+| 物理针 | 功能                | 归属          |
+| --- | ----------------- | ----------- |
+| 1   | 3.3V              | INMP441 VDD |
+| 3   | GPIO2 / SDA1      | OLED SDA    |
+| 5   | GPIO3 / SCL1      | OLED SCL    |
+| 6   | GND               | OLED GND    |
+| 9   | GND               | INMP441 GND |
+| 12  | GPIO18 / PCM\_CLK | INMP441 SCK |
+| 17  | 3.3V              | OLED VCC    |
+| 35  | GPIO19 / PCM\_FS  | INMP441 WS  |
+| 38  | GPIO20 / PCM\_DIN | INMP441 SD  |
+| 39  | GND               | INMP441 L/R |
+
+## 明日计划
+
+1. OLED 点亮并做成开机自启的 IP/状态显示服务（systemd）。
+2. GC9A01 圆屏（SPI）接线与眼睛画面测试。
+3. MG90S 舵机 PWM 控制测试（头部俯仰）。
+4. NEMA14 + TMC2209 步进驱动台架空载测试（身体旋转）。
+
+## 备注
+
+* 校园网无线关联问题（`The Wi-Fi network could not be found`）暂未根修，当前开发不依赖它；后续在有线 SSH 保护下可从容调试，供最终吊装时纯无线运行使用。
+
+## 补记 · OLED 点亮过程（对话体）
+
+这块 4 针 OLED 是 SSD1306 驱动、I²C 接口，接线很简单：VCC 接 17 针（3.3V）、GND 接 6 针、SCL 接 5 针（GPIO3）、SDA 接 3 针（GPIO2）。接好后在 raspi-config 里把 I2C 打开，跑 `i2cdetect -y 1`，表格里出现 3c，说明屏幕已经被系统认出来了，地址是 0x3C。
+
+装 Python 库的时候卡了一下：pip 报 "Temporary failure in name resolution"，一开始以为是库的问题，其实是树莓派的 DNS 坏了，域名解析不出去。给热点连接手动指定了 DNS（223.5.5.5 和 119.29.29.29），网络恢复后改用清华镜像装 luma.oled，一次成功。
+
+显示用的是 luma.oled 库，I²C 接口，port=1、address=0x3C，写了个小脚本显示三行字：GLaDOS ONLINE、当前 IP、CPU 温度。屏幕一次点亮，显示正常。
+
+后来发现屏幕过二十秒左右会自己熄灭，排查后确认不是硬件问题——是测试脚本末尾只写了 sleep(20)，程序跑完退出时库会自动清屏。把休眠时间拉长或改成死循环就能常亮。下一步准备把它做成开机自启的服务，让 IP 和状态常驻显示。
