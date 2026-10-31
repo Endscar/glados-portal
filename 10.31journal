@@ -1,0 +1,57 @@
+# GLaDOS 开发日志 · 2026-10-31
+
+## 今日目标
+
+完成 OLED 常驻服务、GC9A01 眼睛屏、MG90S 舵机、NEMA14+TMC2209 步进电机四项硬件验证。
+
+## 完成内容
+
+### 1. OLED 状态显示服务 ✅
+
+* `oled_status.py`：开机先放打字机 + 滚动字幕动画（Aperture Science 台词），随后进入每 5 秒刷新的 IP / CPU 温度 / 时间循环。
+* 注册为 systemd 服务 `oled-status.service`，开机自启、崩溃自动重启。
+* 修正时区为 Asia/Shanghai（timedatectl），时间显示正确。
+* 增加 SIGTERM/SIGINT 处理：关机或停止服务时 `device.hide()` 主动熄屏，解决"shutdown 后屏幕仍显示最后一帧"的问题。
+
+### 2. GC9A01 圆屏（眼睛）✅
+
+* 驱动选型踩坑记录：luma.lcd 无 gc9a01 型号 → 尝试 st7789 兼容驱动 → 被 Pi 5 的 RPi.GPIO/lgpio 兼容层 bug（GPIO not allocated）阻断 → 最终改用 **Adafruit Blinka** 路线。
+* 关键包：`adafruit-blinka`、`adafruit-blinka-displayio`（Pi 上 displayio 需单独安装）、`adafruit-circuitpython-gc9a01a`、`adafruit-circuitpython-display-shapes`。
+* 注意 CircuitPython 9 变更：`FourWire` 在独立 `fourwire` 模块，不再是 `displayio.FourWire`。
+* 接线：SCK→Pin23(GPIO11)、MOSI→Pin19(GPIO10)、CS→Pin24(GPIO8/CE0)、DC→Pin22(GPIO25)、RES→Pin26(GPIO7)、BLK→3.3V 常亮。
+* `eye_blinka.py` 成功显示黑底黄圈 GLaDOS 眼睛（虹膜+瞳孔+高光）。
+
+### 3. MG90S 舵机（头部俯仰）✅
+
+* 独立供电：12V → XL4015 调至 5.0V（空载先调压再接舵机）。
+* 接线：红→OUT+、棕→OUT− 并与树莓派 GND 共地（Pin14）、橙→Pin32(GPIO12)。
+* gpiozero Servo，脉宽 0.5\~2.5ms，测试动作"中→左→右→中"通过。
+* `PWMSoftwareFallback` 警告可忽略：pigpio 不支持 Pi 5，lgpio 软件 PWM 足够台架测试；正式装机可考虑 GPIO12 硬件 PWM。
+
+### 4. NEMA14 + TMC2209 步进（身体旋转）✅
+
+* STEP/DIR 模式，MS1/MS2 接地（1/8 细分），EN 接地使能，VIO=3.3V，VM=12V。
+* 排障两个引脚坑：
+  * **GPIO16 被 `googlevoicehat-soundcard` 占用**：该声卡 overlay 用 `sdmode-gpios`（GPIO16）控制 Voice HAT 功放开关，INMP441 实际用不到，但内核因此常占 GPIO16 → 弃用该脚。
+  * **GPIO26 异常**：`pinctrl set 26 op dh` 配置输出高，实际回读低、无 consumer，疑似硬件问题或外部拉低 → 弃用该脚。
+* 最终 STEP→Pin11(GPIO17)、DIR→Pin13(GPIO27)，电机正转一圈→停→反转一圈，通过。
+
+### 5. 供电安全设计（待实施）
+
+* 保险方案：12V 总路 5A、步进支路 2A、舵机支路 3A，串正极、靠近电源端，KF301 端子分配。
+* 台架阶段暂不装保险，用"蜂鸣档测短路 + 电压档测输出"两道手续代替。
+
+## 明日/后续计划
+
+1. 眼睛动画：眨眼、瞳孔跟随、与语音状态联动。
+2. 语音链路：INMP441 收音 → ASR → LLM → TTS → 扬声器（MAX98357 待购/接线）。
+3. 双舵机与步进电机装入打印结构件，调机械限位。
+4. 正式装配前补齐保险丝座。
+5. 有线 SSH 保护下调通校园网 Wi-Fi，供吊装后纯无线运行。
+
+## 当前有效文件
+
+* `~/oled_status.py` + `/etc/systemd/system/oled-status.service`
+* `~/eye_blinka.py`
+* `~/servo_test.py`
+* `~/stepper_test.py`
